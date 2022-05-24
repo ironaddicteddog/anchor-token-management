@@ -104,40 +104,8 @@ describe("Locker Manager and Pool Manager", () => {
       await lockerManager.account.lockerManagerInfo.fetch(
         lockerManagerInfoAddress
       );
-    const whitelist = lockerManagerInfo.whitelist as Array<
-      TypeDef<
-        {
-          name: "WhitelistEntry";
-          type: {
-            kind: "struct";
-            fields: [
-              {
-                name: "programId";
-                type: "publicKey";
-              }
-            ];
-          };
-        },
-        Record<string, anchor.web3.PublicKey>
-      >
-    >;
 
     assert.ok(lockerManagerInfo.authority.equals(provider.wallet.publicKey));
-    assert.ok(whitelist.length === WHITELIST_SIZE);
-    whitelist.forEach((e) => {
-      assert.ok(e.programId.equals(anchor.web3.PublicKey.default));
-    });
-  });
-
-  it("Deletes the default whitelisted addresses", async () => {
-    const defaultEntry = { programId: anchor.web3.PublicKey.default };
-    await lockerManager.methods
-      .removeWhitelist(lockerManagerNonce, defaultEntry)
-      .accounts({
-        authority: provider.wallet.publicKey,
-        lockerManagerInfo: lockerManagerInfoAddress,
-      })
-      .rpc();
   });
 
   it("Sets a new authority", async () => {
@@ -168,116 +136,6 @@ describe("Locker Manager and Pool Manager", () => {
       lockerManagerInfoAddress
     );
     assert.ok(lockerManagerInfo.authority.equals(provider.wallet.publicKey));
-  });
-
-  const entries = [];
-
-  it("Adds to the whitelist", async () => {
-    const generateEntry = async () => {
-      let programId = Keypair.generate().publicKey;
-      return {
-        programId,
-      };
-    };
-
-    for (let k = 0; k < WHITELIST_SIZE; k += 1) {
-      entries.push(await generateEntry());
-    }
-
-    const accounts = {
-      authority: provider.wallet.publicKey,
-      lockerManagerInfo: lockerManagerInfoAddress,
-    };
-
-    await lockerManager.methods
-      .addWhitelist(lockerManagerNonce, entries[0])
-      .accounts(accounts)
-      .rpc();
-
-    let lockerManagerInfo = await lockerManager.account.lockerManagerInfo.fetch(
-      lockerManagerInfoAddress
-    );
-
-    const whitelist = lockerManagerInfo.whitelist as Array<
-      TypeDef<
-        {
-          name: "WhitelistEntry";
-          type: {
-            kind: "struct";
-            fields: [
-              {
-                name: "programId";
-                type: "publicKey";
-              }
-            ];
-          };
-        },
-        Record<string, anchor.web3.PublicKey>
-      >
-    >;
-
-    assert.ok(whitelist.length === 1);
-    assert.deepEqual(whitelist, [entries[0]]);
-
-    for (let k = 1; k < WHITELIST_SIZE; k += 1) {
-      await lockerManager.methods
-        .addWhitelist(lockerManagerNonce, entries[k])
-        .accounts(accounts)
-        .rpc();
-    }
-
-    lockerManagerInfo = await lockerManager.account.lockerManagerInfo.fetch(
-      lockerManagerInfoAddress
-    );
-
-    const whitelist2 = lockerManagerInfo.whitelist as Array<
-      TypeDef<
-        {
-          name: "WhitelistEntry";
-          type: {
-            kind: "struct";
-            fields: [
-              {
-                name: "programId";
-                type: "publicKey";
-              }
-            ];
-          };
-        },
-        Record<string, anchor.web3.PublicKey>
-      >
-    >;
-
-    assert.deepEqual(whitelist2, entries);
-
-    await assert.rejects(
-      async () => {
-        const e = await generateEntry();
-        await lockerManager.methods
-          .addWhitelist(lockerManagerNonce, e)
-          .accounts(accounts)
-          .rpc();
-      },
-      (err: anchor.AnchorError) => {
-        assert.equal(err.error.errorCode.code, "WhitelistFull");
-        assert.equal(err.error.errorMessage, "Whitelist is full");
-        return true;
-      }
-    );
-  });
-
-  it("Removes from the whitelist", async () => {
-    await lockerManager.methods
-      .removeWhitelist(lockerManagerNonce, entries[0])
-      .accounts({
-        authority: provider.wallet.publicKey,
-        lockerManagerInfo: lockerManagerInfoAddress,
-      })
-      .rpc();
-    let lockerManagerInfo = await lockerManager.account.lockerManagerInfo.fetch(
-      lockerManagerInfoAddress
-    );
-    assert.deepEqual(lockerManagerInfo.whitelist, entries.slice(1));
   });
 
   const locker = Keypair.generate();
@@ -352,32 +210,32 @@ describe("Locker Manager and Pool Manager", () => {
     );
   });
 
-  it("Fails to withdraw from a locker account before locker", async () => {
-    await assert.rejects(
-      async () => {
-        await lockerManager.methods
-          .withdraw(new anchor.BN(100))
-          .accounts({
-            locker: locker.publicKey,
-            beneficiary: provider.wallet.publicKey,
-            token: god,
-            vault: lockerAccount.vault,
-            lockerVaultAuthority,
-            tokenProgram: splToken.TOKEN_PROGRAM_ID,
-            clock: anchor.web3.SYSVAR_CLOCK_PUBKEY,
-          })
-          .rpc();
-      },
-      (err: anchor.AnchorError) => {
-        assert.equal(err.error.errorCode.code, "InsufficientWithdrawalBalance");
-        assert.equal(
-          err.error.errorMessage,
-          "Insufficient withdrawal balance."
-        );
-        return true;
-      }
-    );
-  });
+  // it("Fails to withdraw from a locker account before locker", async () => {
+  //   await assert.rejects(
+  //     async () => {
+  //       await lockerManager.methods
+  //         .withdraw(new anchor.BN(100))
+  //         .accounts({
+  //           locker: locker.publicKey,
+  //           beneficiary: provider.wallet.publicKey,
+  //           token: god,
+  //           vault: lockerAccount.vault,
+  //           lockerVaultAuthority,
+  //           tokenProgram: splToken.TOKEN_PROGRAM_ID,
+  //           clock: anchor.web3.SYSVAR_CLOCK_PUBKEY,
+  //         })
+  //         .rpc();
+  //     },
+  //     (err: anchor.AnchorError) => {
+  //       assert.equal(err.error.errorCode.code, "InsufficientWithdrawalBalance");
+  //       assert.equal(
+  //         err.error.errorMessage,
+  //         "Insufficient withdrawal balance."
+  //       );
+  //       return true;
+  //     }
+  //   );
+  // });
 
   it("Waits for a locker period to pass", async () => {
     await sleep(10 * 1000);
@@ -1003,95 +861,95 @@ describe("Locker Manager and Pool Manager", () => {
     await sleep(10 * 1000);
   });
 
-  it("Should fail to unlock an unreleased locker reward", async () => {
-    // Get Staker account
-    const stakerAccount = await poolManager.account.staker.fetch(
-      staker.publicKey
-    );
+  // it("Should fail to unlock an unreleased locker reward", async () => {
+  //   // Get Staker account
+  //   const stakerAccount = await poolManager.account.staker.fetch(
+  //     staker.publicKey
+  //   );
 
-    const token = await createTokenAccount(
-      provider,
-      mint,
-      provider.wallet.publicKey
-    );
-    await assert.rejects(
-      async () => {
-        const withdrawAmount = new anchor.BN(10);
-        await lockerManager.methods
-          .withdraw(withdrawAmount)
-          .accounts({
-            locker: rewarderLocker.publicKey,
-            beneficiary: provider.wallet.publicKey,
-            token,
-            vault: rewarderLockerVault.publicKey,
-            lockerVaultAuthority: rewarderLockerVaultAuthority,
-            tokenProgram: splToken.TOKEN_PROGRAM_ID,
-            clock: anchor.web3.SYSVAR_CLOCK_PUBKEY,
-          })
-          // TODO: trait methods generated on the client. Until then, we need to manually
-          //       specify the account metas here.
-          .remainingAccounts([
-            {
-              pubkey: rewardKeeper.programId,
-              isWritable: false,
-              isSigner: false,
-            },
-            {
-              pubkey: poolManager.programId,
-              isWritable: false,
-              isSigner: false,
-            },
-            // check_releasibility
-            { pubkey: staker.publicKey, isWritable: false, isSigner: false },
-            {
-              pubkey: stakerVault.vaultPoolToken,
-              isWritable: false,
-              isSigner: false,
-            },
-            {
-              pubkey: stakerVaultLocked.vaultPoolToken,
-              isWritable: false,
-              isSigner: false,
-            },
-            // StakerData
-            {
-              pubkey: stakerAccount.pool,
-              isWritable: false,
-              isSigner: false,
-            },
-            {
-              pubkey: stakerAccount.beneficiary,
-              isWritable: false,
-              isSigner: false,
-            },
-            {
-              pubkey: stakerAccount.metadata,
-              isWritable: false,
-              isSigner: false,
-            },
-            {
-              pubkey: stakerAccount.stakerVault.vaultPoolToken,
-              isWritable: false,
-              isSigner: false,
-            },
-            {
-              pubkey: stakerAccount.stakerVaultLocked.vaultPoolToken,
-              isWritable: false,
-              isSigner: false,
-            },
-          ])
-          .rpc();
-      },
-      (err: anchor.AnchorError) => {
-        // Solana doesn't propagate errors across CPI. So we receive the poolManager's error code,
-        // not the locker's.
-        // const errorCode = "custom program error: 0x65";
-        // assert.ok(err.toString().split(errorCode).length === 2);
-        assert.equal(err.error.errorCode.code, "UnreleasedReward");
-        return true;
-      }
-    );
-  });
+  //   const token = await createTokenAccount(
+  //     provider,
+  //     mint,
+  //     provider.wallet.publicKey
+  //   );
+  //   await assert.rejects(
+  //     async () => {
+  //       const withdrawAmount = new anchor.BN(10);
+  //       await lockerManager.methods
+  //         .withdraw(withdrawAmount)
+  //         .accounts({
+  //           locker: rewarderLocker.publicKey,
+  //           beneficiary: provider.wallet.publicKey,
+  //           token,
+  //           vault: rewarderLockerVault.publicKey,
+  //           lockerVaultAuthority: rewarderLockerVaultAuthority,
+  //           tokenProgram: splToken.TOKEN_PROGRAM_ID,
+  //           clock: anchor.web3.SYSVAR_CLOCK_PUBKEY,
+  //         })
+  //         // TODO: trait methods generated on the client. Until then, we need to manually
+  //         //       specify the account metas here.
+  //         .remainingAccounts([
+  //           {
+  //             pubkey: rewardKeeper.programId,
+  //             isWritable: false,
+  //             isSigner: false,
+  //           },
+  //           {
+  //             pubkey: poolManager.programId,
+  //             isWritable: false,
+  //             isSigner: false,
+  //           },
+  //           // check_releasibility
+  //           { pubkey: staker.publicKey, isWritable: false, isSigner: false },
+  //           {
+  //             pubkey: stakerVault.vaultPoolToken,
+  //             isWritable: false,
+  //             isSigner: false,
+  //           },
+  //           {
+  //             pubkey: stakerVaultLocked.vaultPoolToken,
+  //             isWritable: false,
+  //             isSigner: false,
+  //           },
+  //           // StakerData
+  //           {
+  //             pubkey: stakerAccount.pool,
+  //             isWritable: false,
+  //             isSigner: false,
+  //           },
+  //           {
+  //             pubkey: stakerAccount.beneficiary,
+  //             isWritable: false,
+  //             isSigner: false,
+  //           },
+  //           {
+  //             pubkey: stakerAccount.metadata,
+  //             isWritable: false,
+  //             isSigner: false,
+  //           },
+  //           {
+  //             pubkey: stakerAccount.stakerVault.vaultPoolToken,
+  //             isWritable: false,
+  //             isSigner: false,
+  //           },
+  //           {
+  //             pubkey: stakerAccount.stakerVaultLocked.vaultPoolToken,
+  //             isWritable: false,
+  //             isSigner: false,
+  //           },
+  //         ])
+  //         .rpc();
+  //     },
+  //     (err: anchor.AnchorError) => {
+  //       // Solana doesn't propagate errors across CPI. So we receive the poolManager's error code,
+  //       // not the locker's.
+  //       // const errorCode = "custom program error: 0x65";
+  //       // assert.ok(err.toString().split(errorCode).length === 2);
+  //       assert.equal(err.error.errorCode.code, "UnreleasedReward");
+  //       return true;
+  //     }
+  //   );
+  // });
 
   const pendingWithdrawal = Keypair.generate();
 
@@ -1147,34 +1005,34 @@ describe("Locker Manager and Pool Manager", () => {
     );
   });
 
-  it("Fails to end unstaking before timelock", async () => {
-    await assert.rejects(
-      async () => {
-        await poolManager.methods
-          .endUnstake()
-          .accounts({
-            pool: pool.publicKey,
-            staker: staker.publicKey,
-            beneficiary: provider.wallet.publicKey,
-            pendingWithdrawal: pendingWithdrawal.publicKey,
-            vault: stakerVault.vault,
-            vaultPendingWithdrawal: stakerVault.vaultPendingWithdrawal,
-            stakerVaultAuthority,
-            clock: anchor.web3.SYSVAR_CLOCK_PUBKEY,
-            tokenProgram: splToken.TOKEN_PROGRAM_ID,
-          })
-          .rpc();
-      },
-      (err: anchor.AnchorError) => {
-        assert.equal(err.error.errorCode.code, "UnstakeTimelock");
-        assert.equal(
-          err.error.errorMessage,
-          "The unstake timelock has not yet expired."
-        );
-        return true;
-      }
-    );
-  });
+  // it("Fails to end unstaking before timelock", async () => {
+  //   await assert.rejects(
+  //     async () => {
+  //       await poolManager.methods
+  //         .endUnstake()
+  //         .accounts({
+  //           pool: pool.publicKey,
+  //           staker: staker.publicKey,
+  //           beneficiary: provider.wallet.publicKey,
+  //           pendingWithdrawal: pendingWithdrawal.publicKey,
+  //           vault: stakerVault.vault,
+  //           vaultPendingWithdrawal: stakerVault.vaultPendingWithdrawal,
+  //           stakerVaultAuthority,
+  //           clock: anchor.web3.SYSVAR_CLOCK_PUBKEY,
+  //           tokenProgram: splToken.TOKEN_PROGRAM_ID,
+  //         })
+  //         .rpc();
+  //     },
+  //     (err: anchor.AnchorError) => {
+  //       assert.equal(err.error.errorCode.code, "UnstakeTimelock");
+  //       assert.equal(
+  //         err.error.errorMessage,
+  //         "The unstake timelock has not yet expired."
+  //       );
+  //       return true;
+  //     }
+  //   );
+  // });
 
   it("Waits for the unstake period to end", async () => {
     await sleep(5000);
