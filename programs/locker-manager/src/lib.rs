@@ -1,7 +1,4 @@
-use anchor_lang::{
-    prelude::*,
-    solana_program::{instruction::Instruction, program::invoke_signed},
-};
+use anchor_lang::prelude::*;
 use anchor_spl::token::{Token, TokenAccount, Transfer, transfer};
 use pool_reward_keeper::{PoolRewardKeeper, StakerData, CheckReleasibility, Locker as KeptLocker, cpi as PoolRewardKeeperCPI};
 use std::collections::BTreeMap;
@@ -14,36 +11,8 @@ declare_id!("7LGfdonJVsPaB3LzfVvDGE9jwHseFVDkg8ZrJfwhiAzw");
 pub mod locker_manager {
     use super::*;
 
-    pub const WHITELIST_SIZE: usize = 10;
-
     pub fn initialize(ctx: Context<Initialize>, _locker_manager_nonce: u64) -> Result<()> {
-        let mut whitelist = vec![];
-        whitelist.resize(WHITELIST_SIZE, Default::default());
         ctx.accounts.locker_manager_info.authority = *ctx.accounts.authority.key;
-        ctx.accounts.locker_manager_info.whitelist = whitelist;
-
-        Ok(())
-    }
-
-    #[access_control(authorize(&ctx))]
-    pub fn add_whitelist(ctx: Context<Auth>, _locker_manager_nonce: u64, entry: WhitelistEntry) -> Result<()> {
-        if ctx.accounts.locker_manager_info.whitelist.len() == WHITELIST_SIZE {
-            return Err(ErrorCode::WhitelistFull.into());
-        }
-        if ctx.accounts.locker_manager_info.whitelist.contains(&entry) {
-            return Err(ErrorCode::WhitelistEntryAlreadyExists.into());
-        }
-        ctx.accounts.locker_manager_info.whitelist.push(entry);
-
-        Ok(())
-    }
-
-    #[access_control(authorize(&ctx))]
-    pub fn remove_whitelist(ctx: Context<Auth>, _locker_manager_nonce: u64, entry: WhitelistEntry) -> Result<()> {
-        if !ctx.accounts.locker_manager_info.whitelist.contains(&entry) {
-            return Err(ErrorCode::WhitelistEntryNotFound.into());
-        }
-        ctx.accounts.locker_manager_info.whitelist.retain(|e| e != &entry);
 
         Ok(())
     }
@@ -121,61 +90,6 @@ pub mod locker_manager {
         Ok(())
     }
 
-    // Sends funds from the locker manager program to a whitelisted program.
-    pub fn withdraw_to_whitelist<'a, 'b, 'c, 'info>(
-        ctx: Context<'a, 'b, 'c, 'info, WithdrawToWhitelist<'info>>,
-        instruction_data: Vec<u8>,
-        amount: u64,
-    ) -> Result<()> {
-        let before_amount = ctx.accounts.transfer.vault.amount;
-        whitelist_relay_cpi(
-            &ctx.accounts.transfer,
-            ctx.remaining_accounts,
-            instruction_data,
-        )?;
-        let after_amount = ctx.accounts.transfer.vault.amount;
-
-        // CPI safety checks.
-        let withdraw_amount = before_amount - after_amount;
-        if withdraw_amount > amount {
-            return Err(ErrorCode::WhitelistWithdrawLimit)?;
-        }
-
-        // Bookeeping.
-        ctx.accounts.transfer.locker.whitelist_owned += withdraw_amount;
-
-        Ok(())
-    }
-
-    // Sends funds from a whitelisted program back to the locker manager program.
-    pub fn deposit_from_whitelist<'a, 'b, 'c, 'info>(
-        ctx: Context<'a, 'b, 'c, 'info, DepositFromWhitelist<'info>>,
-        instruction_data: Vec<u8>,
-    ) -> Result<()> {
-        let before_amount = ctx.accounts.transfer.vault.amount;
-        whitelist_relay_cpi(
-            &ctx.accounts.transfer,
-            ctx.remaining_accounts,
-            instruction_data,
-        )?;
-        let after_amount = ctx.accounts.transfer.vault.amount;
-
-        // CPI safety checks.
-        let deposit_amount = after_amount - before_amount;
-        if deposit_amount <= 0 {
-            return Err(ErrorCode::InsufficientWhitelistDepositAmount)?;
-        }
-        if deposit_amount > ctx.accounts.transfer.locker.whitelist_owned {
-            return Err(ErrorCode::WhitelistDepositOverflow)?;
-        }
-
-        // Bookkeeping.
-        ctx.accounts.transfer.locker.whitelist_owned -= deposit_amount;
-
-        Ok(())
-    }
-
-    // Convenience function for UI's to calculate the withdrawable amount.
     pub fn available_for_withdrawal(ctx: Context<AvailableForWithdrawal>) -> Result<()> {
         let available = calculator::available_for_withdrawal(
             &ctx.accounts.locker,
@@ -183,17 +97,14 @@ pub mod locker_manager {
         );
         // Log as string so that JS can read as a BN.
         msg!(&format!("{{ \"result\": \"{}\" }}", available));
+
         Ok(())
     }
 }
 
 #[account]
 pub struct LockerManagerInfo {
-    /// The key with the ability to change the whitelist.
     pub authority: Pubkey,
-    /// List of programs locked tokens can be sent to. These programs
-    /// are completely trusted to maintain the locked property.
-    pub whitelist: Vec<WhitelistEntry>,
 }
 
 #[derive(Accounts)]
@@ -206,7 +117,7 @@ pub struct Initialize<'info> {
         seeds = [b"locker-manager".as_ref(), &locker_manager_nonce.to_le_bytes()],
         bump,
         payer = authority,
-        space = 8 + 32 + 32 * WHITELIST_SIZE + 4
+        space = 8 + 32 + 32
     )]
     pub locker_manager_info: Box<Account<'info, LockerManagerInfo>>,
     pub system_program: Program<'info, System>,
@@ -226,12 +137,10 @@ pub struct Auth<'info> {
 
 #[derive(Accounts)]
 pub struct CreateLocker<'info> {
-    // Locker.
     #[account(zero)]
     pub locker: Box<Account<'info, Locker>>,
     #[account(mut)]
     pub vault: Account<'info, TokenAccount>,
-    // Depositor.
     /// CHECK: This is not dangerous because we don't read or write from this account
     #[account(mut)]
     pub depositor: AccountInfo<'info>,
@@ -260,11 +169,8 @@ impl<'info> CreateLocker<'info> {
     }
 }
 
-// All accounts not included here, i.e., the "remaining accounts" should be
-// ordered according to the release interface.
 #[derive(Accounts)]
 pub struct Withdraw<'info> {
-    // Locker.
     #[account(mut, has_one = beneficiary, has_one = vault)]
     locker: Box<Account<'info, Locker>>,
     beneficiary: Signer<'info>,
@@ -273,49 +179,10 @@ pub struct Withdraw<'info> {
     /// CHECK: This is not dangerous because we don't read or write from this account
     #[account(seeds = [locker.to_account_info().key.as_ref()], bump = locker.nonce)]
     locker_vault_authority: AccountInfo<'info>,
-    // Withdraw receiving target.
     #[account(mut)]
     token: Account<'info, TokenAccount>,
-    // Misc.
     token_program: Program<'info, Token>,
     clock: Sysvar<'info, Clock>,
-}
-
-#[derive(Accounts)]
-pub struct WithdrawToWhitelist<'info> {
-    transfer: TransferToWhitelist<'info>,
-}
-
-#[derive(Accounts)]
-pub struct DepositFromWhitelist<'info> {
-    transfer: TransferToWhitelist<'info>,
-}
-
-#[derive(Accounts)]
-#[instruction(locker_manager_nonce: u64)]
-pub struct TransferToWhitelist<'info> {
-    #[account(
-        seeds = [b"locker-manager".as_ref(), &locker_manager_nonce.to_le_bytes()],
-        bump
-    )]
-    locker_manager_info: Box<Account<'info, LockerManagerInfo>>,
-    beneficiary: Signer<'info>,
-    /// CHECK: This is not dangerous because we don't read or write from this account
-    whitelisted_program: AccountInfo<'info>,
-    // Whitelist interface.
-    #[account(mut, has_one = beneficiary, has_one = vault)]
-    locker: Box<Account<'info, Locker>>,
-    #[account(mut, constraint = &vault.owner == locker_vault_authority.key)]
-    vault: Account<'info, TokenAccount>,
-    /// CHECK: This is not dangerous because we don't read or write from this account
-    #[account(seeds = [locker.to_account_info().key.as_ref()], bump = locker.nonce)]
-    locker_vault_authority: AccountInfo<'info>,
-    token_program: Program<'info, Token>,
-    /// CHECK: This is not dangerous because we don't read or write from this account
-    #[account(mut)]
-    whitelisted_program_vault: AccountInfo<'info>,
-    /// CHECK: This is not dangerous because we don't read or write from this account
-    whitelisted_program_vault_authority: AccountInfo<'info>,
 }
 
 #[derive(Accounts)]
@@ -326,103 +193,25 @@ pub struct AvailableForWithdrawal<'info> {
 
 #[account]
 pub struct Locker {
-    /// The owner of this Locker account.
     pub beneficiary: Pubkey,
-    /// The mint of the SPL token locked up.
     pub mint: Pubkey,
-    /// Address of the account's token vault.
     pub vault: Pubkey,
-    /// The owner of the token account funding this account.
     pub grantor: Pubkey,
-    /// The current balance of this locker account. All
-    /// withdrawals will deduct this balance.
     pub current_balance: u64,
-    /// The starting balance of this locker account, i.e., how much was
-    /// originally deposited.
     pub start_balance: u64,
-    /// The unix timestamp at which this locker account was created.
     pub created_ts: i64,
-    /// The time at which locker begins.
     pub start_ts: i64,
-    /// The time at which all tokens are vested.
     pub end_ts: i64,
-    /// The number of times locker will occur. For example, if locker
-    /// is once a year over seven years, this will be 7.
     pub period_count: u64,
-    /// The amount of tokens in custody of whitelisted programs.
     pub whitelist_owned: u64,
-    /// Signer nonce.
     pub nonce: u8,
-    /// The program that determines when the locked account is **realeased**.
-    /// In addition to the locker schedule, the program provides the ability
-    /// for applications to determine when locked tokens are considered earned.
-    /// For example, when earning locked tokens via the staking program, one
-    /// cannot receive the tokens until unstaking. As a result, if one never
-    /// unstakes, one would never actually receive the locked tokens.
     pub reward_keeper: Option<RewardKeeper>,
 }
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Debug)]
 pub struct RewardKeeper {
-    /// Program to invoke to check a realization condition. This program must
-    /// implement the `ReleaseLock` trait.
     pub program: Pubkey,
-    /// Address of an arbitrary piece of metadata interpretable by the realizor
-    /// program. For example, when a locker account is allocated, the program
-    /// can define its realization condition as a function of some account
-    /// state. The metadata is the address of that account.
-    ///
-    /// In the case of staking, the metadata is a `Member` account address. When
-    /// the realization condition is checked, the staking program will check the
-    /// `Member` account defined by the `metadata` has no staked tokens.
     pub metadata: Pubkey,
-}
-
-#[derive(AnchorSerialize, AnchorDeserialize, PartialEq, Default, Copy, Clone)]
-pub struct WhitelistEntry {
-    pub program_id: Pubkey,
-}
-
-#[error_code]
-pub enum ErrorCode {
-    #[msg("Locker end must be greater than the current unix timestamp.")]
-    InvalidTimestamp,
-    #[msg("The number of locker periods must be greater than zero.")]
-    InvalidPeriod,
-    #[msg("The locker deposit amount must be greater than zero.")]
-    InvalidDepositAmount,
-    #[msg("The Whitelist entry is not a valid program address.")]
-    InvalidWhitelistEntry,
-    #[msg("Invalid program address. Did you provide the correct nonce?")]
-    InvalidProgramAddress,
-    #[msg("Invalid vault owner.")]
-    InvalidVaultOwner,
-    #[msg("Vault amount must be zero.")]
-    InvalidVaultAmount,
-    #[msg("Insufficient withdrawal balance.")]
-    InsufficientWithdrawalBalance,
-    #[msg("Whitelist is full")]
-    WhitelistFull,
-    #[msg("Whitelist entry already exists")]
-    WhitelistEntryAlreadyExists,
-    #[msg("Balance must go up when performing a whitelist deposit")]
-    InsufficientWhitelistDepositAmount,
-    #[msg("Cannot deposit more than withdrawn")]
-    WhitelistDepositOverflow,
-    #[msg("Tried to withdraw over the specified limit")]
-    WhitelistWithdrawLimit,
-    #[msg("Whitelist entry not found.")]
-    WhitelistEntryNotFound,
-    #[msg("You do not have sufficient permissions to perform this action.")]
-    Unauthorized,
-    #[msg("You are unable to release projected rewards until unstaking.")]
-    UnableToWithdrawWhileStaked,
-    #[msg("The given lock keeper doesn't match the locker account.")]
-    InvalidLockKeeper,
-    #[msg("You have not released this locker account.")]
-    UnreleasedLocker,
-    #[msg("Invalid locker schedule given.")]
-    InvalidSchedule,
 }
 
 impl<'a, 'b, 'c, 'info> From<&mut CreateLocker<'info>>
@@ -451,68 +240,6 @@ impl<'a, 'b, 'c, 'info> From<&Withdraw<'info>> for CpiContext<'a, 'b, 'c, 'info,
     }
 }
 
-#[access_control(is_whitelisted(transfer))]
-pub fn whitelist_relay_cpi<'info>(
-    transfer: &TransferToWhitelist<'info>,
-    remaining_accounts: &[AccountInfo<'info>],
-    instruction_data: Vec<u8>,
-) -> Result<()> {
-    let mut meta_accounts = vec![
-        AccountMeta::new_readonly(*transfer.locker.to_account_info().key, false),
-        AccountMeta::new(*transfer.vault.to_account_info().key, false),
-        AccountMeta::new_readonly(*transfer.locker_vault_authority.to_account_info().key, true),
-        AccountMeta::new_readonly(*transfer.token_program.to_account_info().key, false),
-        AccountMeta::new(
-            *transfer.whitelisted_program_vault.to_account_info().key,
-            false,
-        ),
-        AccountMeta::new_readonly(
-            *transfer
-                .whitelisted_program_vault_authority
-                .to_account_info()
-                .key,
-            false,
-        ),
-    ];
-    meta_accounts.extend(remaining_accounts.iter().map(|a| {
-        if a.is_writable {
-            AccountMeta::new(*a.key, a.is_signer)
-        } else {
-            AccountMeta::new_readonly(*a.key, a.is_signer)
-        }
-    }));
-    let relay_instruction = Instruction {
-        program_id: *transfer.whitelisted_program.to_account_info().key,
-        accounts: meta_accounts,
-        data: instruction_data.to_vec(),
-    };
-
-    let seeds = &[
-        transfer.locker.to_account_info().key.as_ref(),
-        &[transfer.locker.nonce],
-    ];
-    let signer = &[&seeds[..]];
-    let mut accounts = transfer.to_account_infos();
-    accounts.extend_from_slice(&remaining_accounts);
-    invoke_signed(&relay_instruction, &accounts, signer).map_err(Into::into)
-}
-
-pub fn is_whitelisted<'info>(transfer: &TransferToWhitelist<'info>) -> Result<()> {
-    if !transfer.locker_manager_info.whitelist.contains(&WhitelistEntry {
-        program_id: *transfer.whitelisted_program.key,
-    }) {
-        return Err(ErrorCode::WhitelistEntryNotFound.into());
-    }
-    Ok(())
-}
-
-fn authorize(ctx: &Context<Auth>) -> Result<()> {
-    if ctx.accounts.locker_manager_info.authority != *ctx.accounts.authority.key {
-        return Err(ErrorCode::Unauthorized.into());
-    }
-    Ok(())
-}
-
 pub fn is_valid_schedule(start_ts: i64, end_ts: i64, period_count: u64) -> bool {
     if end_ts <= start_ts {
         return false;
@@ -526,9 +253,13 @@ pub fn is_valid_schedule(start_ts: i64, end_ts: i64, period_count: u64) -> bool 
     true
 }
 
-// Returns Ok if the locked locker account has been "realeased". Releasing
-// is application dependent. For example, in the case of staking, one must first
-// unstake before being able to earn locked tokens.
+fn authorize(ctx: &Context<Auth>) -> Result<()> {
+    if ctx.accounts.locker_manager_info.authority != *ctx.accounts.authority.key {
+        return Err(ErrorCode::Unauthorized.into());
+    }
+    Ok(())
+}
+
 fn check_releasability(ctx: &Context<Withdraw>) -> Result<()> {
     if let Some(reward_keeper) = &ctx.accounts.locker.reward_keeper {
         let cpi_program = {
@@ -591,13 +322,44 @@ fn check_releasability(ctx: &Context<Withdraw>) -> Result<()> {
     Ok(())
 }
 
-/// ReleaseLock defines the interface an external program must implement if
-/// they want to define a "releasing condition" on a locked locker account.
-/// This condition must be satisfied *even if a locker schedule has
-/// completed*. Otherwise the user can never earn the locked funds. For example,
-/// in the case of the staking program, one cannot received a locked reward
-/// until one has completely unstaked.
-#[interface]
-pub trait ReleaseLock<'info, T: Accounts<'info>> {
-    fn check_releasability(ctx: Context<T>, v: Locker) -> Result<()>;
+#[error_code]
+pub enum ErrorCode {
+    #[msg("Locker end must be greater than the current unix timestamp.")]
+    InvalidTimestamp,
+    #[msg("The number of locker periods must be greater than zero.")]
+    InvalidPeriod,
+    #[msg("The locker deposit amount must be greater than zero.")]
+    InvalidDepositAmount,
+    #[msg("The Whitelist entry is not a valid program address.")]
+    InvalidWhitelistEntry,
+    #[msg("Invalid program address. Did you provide the correct nonce?")]
+    InvalidProgramAddress,
+    #[msg("Invalid vault owner.")]
+    InvalidVaultOwner,
+    #[msg("Vault amount must be zero.")]
+    InvalidVaultAmount,
+    #[msg("Insufficient withdrawal balance.")]
+    InsufficientWithdrawalBalance,
+    #[msg("Whitelist is full")]
+    WhitelistFull,
+    #[msg("Whitelist entry already exists")]
+    WhitelistEntryAlreadyExists,
+    #[msg("Balance must go up when performing a whitelist deposit")]
+    InsufficientWhitelistDepositAmount,
+    #[msg("Cannot deposit more than withdrawn")]
+    WhitelistDepositOverflow,
+    #[msg("Tried to withdraw over the specified limit")]
+    WhitelistWithdrawLimit,
+    #[msg("Whitelist entry not found.")]
+    WhitelistEntryNotFound,
+    #[msg("You do not have sufficient permissions to perform this action.")]
+    Unauthorized,
+    #[msg("You are unable to release projected rewards until unstaking.")]
+    UnableToWithdrawWhileStaked,
+    #[msg("The given lock keeper doesn't match the locker account.")]
+    InvalidLockKeeper,
+    #[msg("You have not released this locker account.")]
+    UnreleasedLocker,
+    #[msg("Invalid locker schedule given.")]
+    InvalidSchedule,
 }

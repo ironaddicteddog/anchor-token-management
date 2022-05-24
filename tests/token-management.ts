@@ -104,40 +104,8 @@ describe("Locker Manager and Pool Manager", () => {
       await lockerManager.account.lockerManagerInfo.fetch(
         lockerManagerInfoAddress
       );
-    const whitelist = lockerManagerInfo.whitelist as Array<
-      TypeDef<
-        {
-          name: "WhitelistEntry";
-          type: {
-            kind: "struct";
-            fields: [
-              {
-                name: "programId";
-                type: "publicKey";
-              }
-            ];
-          };
-        },
-        Record<string, anchor.web3.PublicKey>
-      >
-    >;
 
     assert.ok(lockerManagerInfo.authority.equals(provider.wallet.publicKey));
-    assert.ok(whitelist.length === WHITELIST_SIZE);
-    whitelist.forEach((e) => {
-      assert.ok(e.programId.equals(anchor.web3.PublicKey.default));
-    });
-  });
-
-  it("Deletes the default whitelisted addresses", async () => {
-    const defaultEntry = { programId: anchor.web3.PublicKey.default };
-    await lockerManager.methods
-      .removeWhitelist(lockerManagerNonce, defaultEntry)
-      .accounts({
-        authority: provider.wallet.publicKey,
-        lockerManagerInfo: lockerManagerInfoAddress,
-      })
-      .rpc();
   });
 
   it("Sets a new authority", async () => {
@@ -168,116 +136,6 @@ describe("Locker Manager and Pool Manager", () => {
       lockerManagerInfoAddress
     );
     assert.ok(lockerManagerInfo.authority.equals(provider.wallet.publicKey));
-  });
-
-  const entries = [];
-
-  it("Adds to the whitelist", async () => {
-    const generateEntry = async () => {
-      let programId = Keypair.generate().publicKey;
-      return {
-        programId,
-      };
-    };
-
-    for (let k = 0; k < WHITELIST_SIZE; k += 1) {
-      entries.push(await generateEntry());
-    }
-
-    const accounts = {
-      authority: provider.wallet.publicKey,
-      lockerManagerInfo: lockerManagerInfoAddress,
-    };
-
-    await lockerManager.methods
-      .addWhitelist(lockerManagerNonce, entries[0])
-      .accounts(accounts)
-      .rpc();
-
-    let lockerManagerInfo = await lockerManager.account.lockerManagerInfo.fetch(
-      lockerManagerInfoAddress
-    );
-
-    const whitelist = lockerManagerInfo.whitelist as Array<
-      TypeDef<
-        {
-          name: "WhitelistEntry";
-          type: {
-            kind: "struct";
-            fields: [
-              {
-                name: "programId";
-                type: "publicKey";
-              }
-            ];
-          };
-        },
-        Record<string, anchor.web3.PublicKey>
-      >
-    >;
-
-    assert.ok(whitelist.length === 1);
-    assert.deepEqual(whitelist, [entries[0]]);
-
-    for (let k = 1; k < WHITELIST_SIZE; k += 1) {
-      await lockerManager.methods
-        .addWhitelist(lockerManagerNonce, entries[k])
-        .accounts(accounts)
-        .rpc();
-    }
-
-    lockerManagerInfo = await lockerManager.account.lockerManagerInfo.fetch(
-      lockerManagerInfoAddress
-    );
-
-    const whitelist2 = lockerManagerInfo.whitelist as Array<
-      TypeDef<
-        {
-          name: "WhitelistEntry";
-          type: {
-            kind: "struct";
-            fields: [
-              {
-                name: "programId";
-                type: "publicKey";
-              }
-            ];
-          };
-        },
-        Record<string, anchor.web3.PublicKey>
-      >
-    >;
-
-    assert.deepEqual(whitelist2, entries);
-
-    await assert.rejects(
-      async () => {
-        const e = await generateEntry();
-        await lockerManager.methods
-          .addWhitelist(lockerManagerNonce, e)
-          .accounts(accounts)
-          .rpc();
-      },
-      (err: anchor.AnchorError) => {
-        assert.equal(err.error.errorCode.code, "WhitelistFull");
-        assert.equal(err.error.errorMessage, "Whitelist is full");
-        return true;
-      }
-    );
-  });
-
-  it("Removes from the whitelist", async () => {
-    await lockerManager.methods
-      .removeWhitelist(lockerManagerNonce, entries[0])
-      .accounts({
-        authority: provider.wallet.publicKey,
-        lockerManagerInfo: lockerManagerInfoAddress,
-      })
-      .rpc();
-    let lockerManagerInfo = await lockerManager.account.lockerManagerInfo.fetch(
-      lockerManagerInfoAddress
-    );
-    assert.deepEqual(lockerManagerInfo.whitelist, entries.slice(1));
   });
 
   const locker = Keypair.generate();

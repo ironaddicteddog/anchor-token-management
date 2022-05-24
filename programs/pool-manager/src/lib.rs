@@ -1,7 +1,7 @@
 use anchor_lang::prelude::*;
-use anchor_lang::solana_program::{program_option::COption, msg};
+use anchor_lang::solana_program::{program_option::COption};
 use anchor_spl::token::{Token, Mint, MintTo, Burn, TokenAccount, Transfer, mint_to, burn, transfer};
-use locker_manager::{CreateLocker, RewardKeeper, Locker, cpi as LockerManagerCPI, is_valid_schedule};
+use locker_manager::{CreateLocker, RewardKeeper, cpi as LockerManagerCPI, is_valid_schedule};
 use std::collections::BTreeMap;
 use std::convert::Into;
 
@@ -89,6 +89,7 @@ mod pool_manager {
         staker.pool = *ctx.accounts.pool.to_account_info().key;
         staker.beneficiary = *ctx.accounts.beneficiary.key;
         staker.nonce = nonce;
+
         Ok(())
     }
 
@@ -97,6 +98,7 @@ mod pool_manager {
         if let Some(m) = metadata {
             staker.metadata = m;
         }
+
         Ok(())
     }
 
@@ -104,6 +106,7 @@ mod pool_manager {
     pub fn update_staker_vault(ctx: Context<UpdateStakerVault>, nonce: u8) -> Result<()> {
         let staker = &mut ctx.accounts.staker;
         staker.staker_vault = (&ctx.accounts.staker_vault).into();
+
         Ok(())
     }
 
@@ -114,16 +117,11 @@ mod pool_manager {
     ) -> Result<()> {
         let staker = &mut ctx.accounts.staker;
         staker.staker_vault_locked = (&ctx.accounts.staker_vault_locked).into();
+
         Ok(())
     }
 
-    // Deposits that can only come directly from the staker beneficiary.
     pub fn deposit(ctx: Context<Deposit>, amount: u64) -> Result<()> {
-        transfer(ctx.accounts.into(), amount).map_err(Into::into)
-    }
-
-    // Deposits that can only come from the beneficiary's locker accounts.
-    pub fn deposit_from_locker(ctx: Context<DepositFromLocker>, _bump: u8, amount: u64) -> Result<()> {
         transfer(ctx.accounts.into(), amount).map_err(Into::into)
     }
 
@@ -263,6 +261,7 @@ mod pool_manager {
                 &ctx.accounts.staker.staker_vault
             }
         };
+
         // Check the vaults given are corrrect.
         if &staker_vault.vault != ctx.accounts.vault.key {
             return Err(ErrorCode::InvalidVault.into());
@@ -316,24 +315,6 @@ mod pool_manager {
         transfer(cpi_ctx, amount).map_err(Into::into)
     }
 
-    pub fn withdraw_to_locker(ctx: Context<WithdrawToLocker>, _bump: u8, amount: u64) -> Result<()> {
-        let seeds = &[
-            ctx.accounts.pool.to_account_info().key.as_ref(),
-            ctx.accounts.staker.to_account_info().key.as_ref(),
-            &[ctx.accounts.staker.nonce],
-        ];
-        let signer = &[&seeds[..]];
-        let cpi_accounts = Transfer {
-            from: ctx.accounts.staker_vault.to_account_info(),
-            to: ctx.accounts.locker_vault.to_account_info(),
-            authority: ctx.accounts.staker_vault_authority.clone(),
-        };
-        let cpi_program = ctx.accounts.token_program.to_account_info().clone();
-        let cpi_ctx = CpiContext::new_with_signer(cpi_program, cpi_accounts, signer);
-
-        transfer(cpi_ctx, amount).map_err(Into::into)
-    }
-
     #[access_control(DropReward::accounts(&ctx, nonce))]
     pub fn drop_reward(
         ctx: Context<DropReward>,
@@ -348,46 +329,22 @@ mod pool_manager {
         }
         if ctx.accounts.clock.unix_timestamp >= expiry_ts {
             return Err(ErrorCode::InvalidExpiry.into());
-        }
-        if ctx.accounts.pool.to_account_info().key == &dxl_pool::ID {
-            if ctx.accounts.rewarder_vault.mint != dxl_mint::ID {
-                return Err(ErrorCode::InvalidMint.into());
-            }
-            if total < DXL_MIN_REWARD {
-                return Err(ErrorCode::InsufficientReward.into());
-            }
-        } else if ctx.accounts.pool.to_account_info().key == &fida_pool::ID {
-            if ctx.accounts.rewarder_vault.mint != fida_mint::ID {
-                return Err(ErrorCode::InvalidMint.into());
-            }
-            if total < FIDA_MIN_REWARD {
-                return Err(ErrorCode::InsufficientReward.into());
-            }
-        } else if ctx.accounts.pool.to_account_info().key == &srm_pool::ID
-            || ctx.accounts.pool.to_account_info().key == &msrm_pool::ID
-        {
-            if ctx.accounts.rewarder_vault.mint != srm_mint::ID {
-                return Err(ErrorCode::InvalidMint.into());
-            }
-            if total < SRM_MIN_REWARD {
-                return Err(ErrorCode::InsufficientReward.into());
-            }
         } else {
             // TODO: in a future major version upgrade. Add the amount + mint
             //       to the pool so that one can remove the hardcoded
             //       variables.
             msg!("Reward amount not constrained. Please open a pull request.");
         }
+
         if let RewarderKind::Locked {
             start_ts,
             end_ts,
             period_count,
-        } = kind
-        {
+        } = kind {
             if !is_valid_schedule(start_ts, end_ts, period_count) {
                 return Err(ErrorCode::InvalidVestingSchedule.into());
             }
-        }
+        };
 
         // Transfer funds into the rewarder's vault.
         transfer(ctx.accounts.into(), total)?;
@@ -582,13 +539,6 @@ mod pool_manager {
     }
 }
 
-fn authorize(ctx: &Context<Auth>) -> Result<()> {
-    if ctx.accounts.pool_manager_info.authority != *ctx.accounts.authority.key {
-        return Err(ErrorCode::Unauthorized.into());
-    }
-    Ok(())
-}
-
 #[account]
 pub struct PoolManagerInfo {
     pub authority: Pubkey,
@@ -634,15 +584,12 @@ pub struct UpdatePool<'info> {
 
 #[derive(Accounts)]
 pub struct CreateStaker<'info> {
-    // Stake instance.
     pool: Box<Account<'info, Pool>>,
-    // Staker.
     #[account(zero)]
     staker: Box<Account<'info, Staker>>,
     beneficiary: Signer<'info>,
     /// CHECK: This is not dangerous because we don't read or write from this account
     staker_vault_authority: AccountInfo<'info>,
-    // Misc.
     token_program: Program<'info, Token>,
     rent: Sysvar<'info, Rent>,
 }
@@ -728,11 +675,6 @@ impl<'info> UpdateStakerVaultLocked<'info> {
     }
 }
 
-// When creating a staker, the mints and owners of these accounts are correct.
-// Upon creation, we assign the accounts. A onetime operation.
-// When using a staker, we check these accounts addresess are equal to the
-// addresses stored on the staker. If so, the correct accounts were given are
-// correct.
 #[derive(Accounts, Clone)]
 pub struct StakerVaultAccounts<'info> {
     #[account(mut, constraint = vault.owner == vault_pool_token.owner)]
@@ -793,76 +735,31 @@ pub struct UpdateStaker<'info> {
 
 #[derive(Accounts)]
 pub struct Deposit<'info> {
-    // Staker.
     #[account(has_one = beneficiary)]
     staker: Box<Account<'info, Staker>>,
     beneficiary: Signer<'info>,
     #[account(mut, constraint = vault.to_account_info().key == &staker.staker_vault.vault)]
     vault: Account<'info, TokenAccount>,
-    // Depositor.
     /// CHECK: This is not dangerous because we don't read or write from this account
     #[account(mut)]
     depositor: AccountInfo<'info>,
     #[account(constraint = depositor_authority.key == &staker.beneficiary)]
     depositor_authority: Signer<'info>,
-    // Misc.
     token_program: Program<'info, Token>,
-}
-
-#[derive(Accounts)]
-#[instruction(pool_manager_nonce: u64)]
-pub struct DepositFromLocker<'info> {
-    // Lockup whitelist relay interface.
-    #[account(
-        constraint = locker.to_account_info().owner == &pool_manager.locker_manager_program,
-        constraint = locker.beneficiary == staker.beneficiary
-    )]
-    locker: Account<'info, Locker>,
-    /// CHECK: This is not dangerous because we don't read or write from this account
-    #[account(mut, constraint = locker_vault.key == &locker.vault)]
-    locker_vault: AccountInfo<'info>,
-    // Note: no need to verify the depositor_authority since the SPL program
-    //       will fail the transaction if it's not correct.
-    depositor_authority: Signer<'info>,
-    token_program: Program<'info, Token>,
-    #[account(
-        mut,
-        constraint = staker_vault.to_account_info().key == &staker.staker_vault_locked.vault
-    )]
-    staker_vault: Account<'info, TokenAccount>,
-    /// CHECK: This is not dangerous because we don't read or write from this account
-    #[account(
-        seeds = [
-            pool.to_account_info().key.as_ref(),
-            staker.to_account_info().key.as_ref(),
-        ],
-        bump = staker.nonce
-    )]
-    staker_vault_authority: AccountInfo<'info>,
-    // Program specific.
-    #[account(seeds = [b"pool-manager".as_ref(), &pool_manager_nonce.to_le_bytes()], bump)]
-    pool_manager: Box<Account<'info, PoolManagerInfo>>,
-    pool: Box<Account<'info, Pool>>,
-    #[account(has_one = pool, has_one = beneficiary)]
-    staker: Box<Account<'info, Staker>>,
-    beneficiary: Signer<'info>,
 }
 
 #[derive(Accounts)]
 pub struct Stake<'info> {
-    // Global accounts for the staking instance.
     #[account(has_one = pool_mint, has_one = reward_event_q)]
     pool: Box<Account<'info, Pool>>,
     reward_event_q: Box<Account<'info, RewardQueue>>,
     #[account(mut)]
     pool_mint: Box<Account<'info, Mint>>,
-    // Staker.
     #[account(mut, has_one = beneficiary, has_one = pool)]
     staker: Box<Account<'info, Staker>>,
     beneficiary: Signer<'info>,
     #[account(constraint = StakerVault::from(&staker_vault) == staker.staker_vault)]
     staker_vault: StakerVaultAccounts<'info>,
-    // Program signers.
     /// CHECK: This is not dangerous because we don't read or write from this account
     #[account(
         seeds = [
@@ -875,21 +772,18 @@ pub struct Stake<'info> {
     /// CHECK: This is not dangerous because we don't read or write from this account
     #[account(seeds = [pool.to_account_info().key.as_ref()], bump = pool.nonce)]
     pool_mint_authority: AccountInfo<'info>,
-    // Misc.
     clock: Sysvar<'info, Clock>,
     token_program: Program<'info, Token>,
 }
 
 #[derive(Accounts)]
 pub struct StartUnstake<'info> {
-    // Stake instance globals.
     #[account(has_one = reward_event_q, has_one = pool_mint)]
     pool: Box<Account<'info, Pool>>,
     reward_event_q: Box<Account<'info, RewardQueue>>,
     /// CHECK: This is not dangerous because we don't read or write from this account
     #[account(mut)]
     pool_mint: AccountInfo<'info>,
-    // Staker.
     #[account(zero)]
     pending_withdrawal: Box<Account<'info, PendingWithdrawal>>,
     #[account(has_one = beneficiary, has_one = pool)]
@@ -897,7 +791,6 @@ pub struct StartUnstake<'info> {
     beneficiary: Signer<'info>,
     #[account(constraint = StakerVault::from(&staker_vault) == staker.staker_vault)]
     staker_vault: StakerVaultAccounts<'info>,
-    // Programmatic signers.
     /// CHECK: This is not dangerous because we don't read or write from this account
     #[account(
         seeds = [
@@ -907,7 +800,6 @@ pub struct StartUnstake<'info> {
         bump = staker.nonce
     )]
     staker_vault_authority: AccountInfo<'info>,
-    // Misc.
     token_program: Program<'info, Token>,
     clock: Sysvar<'info, Clock>,
     rent: Sysvar<'info, Rent>,
@@ -921,10 +813,6 @@ pub struct EndUnstake<'info> {
     beneficiary: Signer<'info>,
     #[account(mut, has_one = pool, has_one = staker, constraint = !pending_withdrawal.burned)]
     pending_withdrawal: Box<Account<'info, PendingWithdrawal>>,
-    // If we had ordered maps implementing Accounts we could do a constraint like
-    // staker_vault.get(pending_withdrawal.balance_id).vault == vault.key.
-    //
-    // Note: we do the constraints check in the handler, not here.
     /// CHECK: This is not dangerous because we don't read or write from this account
     #[account(mut)]
     vault: AccountInfo<'info>,
@@ -946,9 +834,7 @@ pub struct EndUnstake<'info> {
 
 #[derive(Accounts)]
 pub struct Withdraw<'info> {
-    // Stake instance.
     pool: Box<Account<'info, Pool>>,
-    // Staker.
     #[account(has_one = pool, has_one = beneficiary)]
     staker: Box<Account<'info, Staker>>,
     beneficiary: Signer<'info>,
@@ -963,70 +849,27 @@ pub struct Withdraw<'info> {
         bump = staker.nonce
     )]
     staker_vault_authority: AccountInfo<'info>,
-    // Receiver.
     /// CHECK: This is not dangerous because we don't read or write from this account
     #[account(mut)]
     depositor: AccountInfo<'info>,
-    // Misc.
     token_program: Program<'info, Token>,
-}
-
-#[derive(Accounts)]
-#[instruction(pool_manager_nonce: u64)]
-pub struct WithdrawToLocker<'info> {
-    // Lockup whitelist relay interface.
-    #[account(
-        constraint = locker.to_account_info().owner == &pool_manager_info.locker_manager_program,
-        constraint = locker.beneficiary == staker.beneficiary
-    )]
-    locker: Account<'info, Locker>,
-    /// CHECK: This is not dangerous because we don't read or write from this account
-    #[account(mut, constraint = locker_vault.key == &locker.vault)]
-    locker_vault: AccountInfo<'info>,
-    locker_vault_authority: Signer<'info>,
-    token_program: Program<'info, Token>,
-    #[account(
-        mut,
-        constraint = staker_vault.to_account_info().key == &staker.staker_vault_locked.vault
-    )]
-    staker_vault: Account<'info, TokenAccount>,
-    /// CHECK: This is not dangerous because we don't read or write from this account
-    #[account(
-        seeds = [
-            pool.to_account_info().key.as_ref(),
-            staker.to_account_info().key.as_ref(),
-        ],
-        bump = staker.nonce
-    )]
-    staker_vault_authority: AccountInfo<'info>,
-    // Program specific.
-    #[account(seeds = [b"pool-manager".as_ref(), &pool_manager_nonce.to_le_bytes()], bump)]
-    pool_manager_info: Box<Account<'info, PoolManagerInfo>>,
-    pool: Box<Account<'info, Pool>>,
-    #[account(has_one = pool, has_one = beneficiary)]
-    staker: Box<Account<'info, Staker>>,
-    beneficiary: Signer<'info>,
 }
 
 #[derive(Accounts)]
 pub struct DropReward<'info> {
-    // Staking instance.
     #[account(has_one = reward_event_q, has_one = pool_mint)]
     pool: Box<Account<'info, Pool>>,
     #[account(mut)]
     reward_event_q: Box<Account<'info, RewardQueue>>,
     pool_mint: Account<'info, Mint>,
-    // Rewarder.
     #[account(zero)]
     rewarder: Box<Account<'info, Rewarder>>,
     #[account(mut)]
     rewarder_vault: Account<'info, TokenAccount>,
-    // Depositor.
     /// CHECK: This is not dangerous because we don't read or write from this account
     #[account(mut)]
     depositor: AccountInfo<'info>,
     depositor_authority: Signer<'info>,
-    // Misc.
     token_program: Program<'info, Token>,
     clock: Sysvar<'info, Clock>,
     rent: Sysvar<'info, Rent>,
@@ -1054,7 +897,6 @@ impl<'info> DropReward<'info> {
 #[derive(Accounts)]
 pub struct ClaimReward<'info> {
     common: ClaimRewardCommon<'info>,
-    // Account to send reward to.
     /// CHECK: This is not dangerous because we don't read or write from this account
     #[account(mut)]
     to: AccountInfo<'info>,
@@ -1077,9 +919,7 @@ pub struct ClaimRewardToLocker<'info> {
 // Accounts common to both claim reward locked/unlocked instructions.
 #[derive(Accounts)]
 pub struct ClaimRewardCommon<'info> {
-    // Stake instance.
     pool: Box<Account<'info, Pool>>,
-    // Staker.
     #[account(mut, has_one = pool, has_one = beneficiary)]
     staker: Box<Account<'info, Staker>>,
     beneficiary: Signer<'info>,
@@ -1087,7 +927,6 @@ pub struct ClaimRewardCommon<'info> {
     staker_vault_pool_token: Account<'info, TokenAccount>,
     #[account(constraint = staker_vault_locked_pool_token.key() == staker.staker_vault_locked.vault_pool_token)]
     staker_vault_locked_pool_token: Account<'info, TokenAccount>,
-    // Rewarder.
     #[account(has_one = pool, has_one = vault)]
     rewarder: Box<Account<'info, Rewarder>>,
     /// CHECK: This is not dangerous because we don't read or write from this account
@@ -1102,16 +941,13 @@ pub struct ClaimRewardCommon<'info> {
         bump = rewarder.nonce
     )]
     rewarder_vault_authority: AccountInfo<'info>,
-    // Misc.
     token_program: Program<'info, Token>,
     clock: Sysvar<'info, Clock>,
 }
 
 #[derive(Accounts)]
 pub struct ExpireReward<'info> {
-    // Staking instance globals.
     pool: Box<Account<'info, Pool>>,
-    // Rewarder.
     #[account(mut, has_one = pool, has_one = vault, has_one = expiry_receiver)]
     rewarder: Box<Account<'info, Rewarder>>,
     #[account(mut)]
@@ -1125,104 +961,61 @@ pub struct ExpireReward<'info> {
         bump = rewarder.nonce
     )]
     rewarder_vault_authority: AccountInfo<'info>,
-    // Receiver.
     expiry_receiver: Signer<'info>,
     /// CHECK: This is not dangerous because we don't read or write from this account
     #[account(mut)]
     expiry_receiver_token: AccountInfo<'info>,
-    // Misc.
     token_program: Program<'info, Token>,
     clock: Sysvar<'info, Clock>,
 }
 
 #[account]
 pub struct Pool {
-    /// Priviledged account.
     pub authority: Pubkey,
-    /// Nonce to derive the program-derived address owning the vaults.
     pub nonce: u8,
-    /// Number of seconds that must pass for a withdrawal to complete.
     pub withdrawal_timelock: i64,
-    /// Global event queue for reward rewardering.
     pub reward_event_q: Pubkey,
-    /// Mint of the tokens that can be staked.
     pub mint: Pubkey,
-    /// Staking pool token mint.
     pub pool_mint: Pubkey,
-    /// The amount of tokens (not decimal) that must be staked to get a single
-    /// staking pool token.
     pub stake_rate: u64,
 }
 
 #[account]
 pub struct Staker {
-    /// Pool the staker belongs to.
     pub pool: Pubkey,
-    /// The effective owner of the Staker account.
     pub beneficiary: Pubkey,
-    /// Arbitrary metadata account owned by any program.
     pub metadata: Pubkey,
-    /// Sets of vault owned by the Staker.
     pub staker_vault: StakerVault,
-    /// Locked vaults owned by the Staker.
     pub staker_vault_locked: StakerVault,
-    /// Next position in the rewards event queue to process.
     pub rewards_cursor: u32,
-    /// The clock timestamp of the last time this account staked or switched
-    /// entities. Used as a proof to reward rewarders that the Staker account
-    /// was staked at a given point in time.
     pub last_stake_ts: i64,
-    /// Signer nonce.
     pub nonce: u8,
 }
 
-// StakerVault defines isolated funds that can only be deposited/withdrawn
-// into the program.
-//
-// Once controlled by the program, the associated `Staker` account's beneficiary
-// can send funds to/from any of the accounts within the sandbox, e.g., to
-// stake.
 #[derive(AnchorSerialize, AnchorDeserialize, Default, Debug, Clone, PartialEq)]
 pub struct StakerVault {
-    // Free balance (deposit) vaults.
     pub vault: Pubkey,
-    // Stake vaults.
     pub vault_staked: Pubkey,
-    // Pending withdrawal vaults.
     pub vault_pending_withdrawal: Pubkey,
-    // Staking pool token.
     pub vault_pool_token: Pubkey,
 }
 
 #[account]
 pub struct PendingWithdrawal {
-    /// Pool this account belongs to.
     pub pool: Pubkey,
-    /// Staker this account belongs to.
     pub staker: Pubkey,
-    /// One time token. True if the withdrawal has been completed.
     pub burned: bool,
-    /// The pool being withdrawn from.
     pub pool_mint: Pubkey,
-    /// Unix timestamp when this account was initialized.
     pub start_ts: i64,
-    /// Timestamp when the pending withdrawal completes.
     pub end_ts: i64,
-    /// The number of tokens redeemed from the staking pool.
     pub amount: u64,
-    /// True if the withdrawal applies to locked balances.
     pub locked: bool,
 }
 
 #[account]
 pub struct RewardQueue {
-    // Invariant: index is position of the next available slot.
     head: u32,
-    // Invariant: index is position of the first (oldest) taken slot.
-    // Invariant: head == tail => queue is initialized.
-    // Invariant: index_of(head + 1) == index_of(tail) => queue is full.
     tail: u32,
-    // Although a vec is used, the size is immutable.
     events: Vec<RewardEvent>,
 }
 
@@ -1299,6 +1092,90 @@ pub enum RewarderKind {
     },
 }
 
+impl<'a, 'b, 'c, 'info> From<&mut Deposit<'info>> for CpiContext<'a, 'b, 'c, 'info, Transfer<'info>> {
+    fn from(accounts: &mut Deposit<'info>) -> CpiContext<'a, 'b, 'c, 'info, Transfer<'info>> {
+        let cpi_accounts = Transfer {
+            from: accounts.depositor.clone(),
+            to: accounts.vault.to_account_info(),
+            authority: accounts.depositor_authority.to_account_info().clone(),
+        };
+        let cpi_program = accounts.token_program.to_account_info().clone();
+        CpiContext::new(cpi_program, cpi_accounts)
+    }
+}
+
+impl<'a, 'b, 'c, 'info> From<&mut DropReward<'info>> for CpiContext<'a, 'b, 'c, 'info, Transfer<'info>> {
+    fn from(accounts: &mut DropReward<'info>) -> CpiContext<'a, 'b, 'c, 'info, Transfer<'info>> {
+        let cpi_accounts = Transfer {
+            from: accounts.depositor.clone(),
+            to: accounts.rewarder_vault.to_account_info(),
+            authority: accounts.depositor_authority.to_account_info().clone(),
+        };
+        let cpi_program = accounts.token_program.to_account_info().clone();
+        CpiContext::new(cpi_program, cpi_accounts)
+    }
+}
+
+impl<'info> From<&StakerVaultAccounts<'info>> for StakerVault {
+    fn from(accs: &StakerVaultAccounts<'info>) -> Self {
+        Self {
+            vault_pool_token: *accs.vault_pool_token.to_account_info().key,
+            vault: *accs.vault.to_account_info().key,
+            vault_staked: *accs.vault_staked.to_account_info().key,
+            vault_pending_withdrawal: *accs.vault_pending_withdrawal.to_account_info().key,
+        }
+    }
+}
+
+fn authorize(ctx: &Context<Auth>) -> Result<()> {
+    if ctx.accounts.pool_manager_info.authority != *ctx.accounts.authority.key {
+        return Err(ErrorCode::Unauthorized.into());
+    }
+    Ok(())
+}
+
+pub fn no_available_rewards<'info>(
+    reward_q: &Box<Account<'info, RewardQueue>>,
+    staker: &Box<Account<'info, Staker>>,
+    staker_vault: &StakerVaultAccounts<'info>,
+) -> Result<()> {
+    let mut cursor = staker.rewards_cursor;
+
+    // If the staker's cursor is less then the tail, then the ring buffer has
+    // overwritten those entries, so jump to the tail.
+    let tail = reward_q.tail();
+    if cursor < tail {
+        cursor = tail;
+    }
+
+    while cursor < reward_q.head() {
+        let r_event = reward_q.get(cursor);
+        if staker.last_stake_ts < r_event.ts {
+            if staker_vault.vault_pool_token.amount > 0 {
+                return Err(ErrorCode::RewardsNeedsProcessing.into());
+            }
+        }
+        cursor += 1;
+    }
+
+    Ok(())
+}
+
+fn reward_eligible(common: &ClaimRewardCommon) -> Result<()> {
+    let rewarder = &common.rewarder;
+    let staker = &common.staker;
+    if rewarder.expired {
+        return Err(ErrorCode::RewarderExpired.into());
+    }
+    if staker.rewards_cursor > rewarder.reward_event_q_cursor {
+        return Err(ErrorCode::CursorAlreadyProcessed.into());
+    }
+    if staker.last_stake_ts > rewarder.start_ts {
+        return Err(ErrorCode::NotStakedDuringDrop.into());
+    }
+    Ok(())
+}
+
 #[error_code]
 pub enum ErrorCode {
     #[msg("You do not have sufficient permissions to perform this action.")]
@@ -1355,128 +1232,4 @@ pub enum ErrorCode {
     InvalidProgramAuthority,
     #[msg("Invalid mint supplied")]
     InvalidMint,
-}
-
-impl<'a, 'b, 'c, 'info> From<&mut Deposit<'info>>
-    for CpiContext<'a, 'b, 'c, 'info, Transfer<'info>>
-{
-    fn from(accounts: &mut Deposit<'info>) -> CpiContext<'a, 'b, 'c, 'info, Transfer<'info>> {
-        let cpi_accounts = Transfer {
-            from: accounts.depositor.clone(),
-            to: accounts.vault.to_account_info(),
-            authority: accounts.depositor_authority.to_account_info().clone(),
-        };
-        let cpi_program = accounts.token_program.to_account_info().clone();
-        CpiContext::new(cpi_program, cpi_accounts)
-    }
-}
-
-impl<'a, 'b, 'c, 'info> From<&mut DepositFromLocker<'info>>
-    for CpiContext<'a, 'b, 'c, 'info, Transfer<'info>>
-{
-    fn from(accounts: &mut DepositFromLocker<'info>) -> CpiContext<'a, 'b, 'c, 'info, Transfer<'info>> {
-        let cpi_accounts = Transfer {
-            from: accounts.locker_vault.clone(),
-            to: accounts.staker_vault.to_account_info(),
-            authority: accounts.depositor_authority.to_account_info().clone(),
-        };
-        let cpi_program = accounts.token_program.to_account_info().clone();
-        CpiContext::new(cpi_program, cpi_accounts)
-    }
-}
-
-impl<'a, 'b, 'c, 'info> From<&mut DropReward<'info>>
-    for CpiContext<'a, 'b, 'c, 'info, Transfer<'info>>
-{
-    fn from(accounts: &mut DropReward<'info>) -> CpiContext<'a, 'b, 'c, 'info, Transfer<'info>> {
-        let cpi_accounts = Transfer {
-            from: accounts.depositor.clone(),
-            to: accounts.rewarder_vault.to_account_info(),
-            authority: accounts.depositor_authority.to_account_info().clone(),
-        };
-        let cpi_program = accounts.token_program.to_account_info().clone();
-        CpiContext::new(cpi_program, cpi_accounts)
-    }
-}
-
-impl<'info> From<&StakerVaultAccounts<'info>> for StakerVault {
-    fn from(accs: &StakerVaultAccounts<'info>) -> Self {
-        Self {
-            vault_pool_token: *accs.vault_pool_token.to_account_info().key,
-            vault: *accs.vault.to_account_info().key,
-            vault_staked: *accs.vault_staked.to_account_info().key,
-            vault_pending_withdrawal: *accs.vault_pending_withdrawal.to_account_info().key,
-        }
-    }
-}
-
-fn reward_eligible(common: &ClaimRewardCommon) -> Result<()> {
-    let rewarder = &common.rewarder;
-    let staker = &common.staker;
-    if rewarder.expired {
-        return Err(ErrorCode::RewarderExpired.into());
-    }
-    if staker.rewards_cursor > rewarder.reward_event_q_cursor {
-        return Err(ErrorCode::CursorAlreadyProcessed.into());
-    }
-    if staker.last_stake_ts > rewarder.start_ts {
-        return Err(ErrorCode::NotStakedDuringDrop.into());
-    }
-    Ok(())
-}
-
-// Asserts the user calling the `Stake` instruction has no rewards available
-// in the reward queue.
-pub fn no_available_rewards<'info>(
-    reward_q: &Box<Account<'info, RewardQueue>>,
-    staker: &Box<Account<'info, Staker>>,
-    staker_vault: &StakerVaultAccounts<'info>,
-) -> Result<()> {
-    let mut cursor = staker.rewards_cursor;
-
-    // If the staker's cursor is less then the tail, then the ring buffer has
-    // overwritten those entries, so jump to the tail.
-    let tail = reward_q.tail();
-    if cursor < tail {
-        cursor = tail;
-    }
-
-    while cursor < reward_q.head() {
-        let r_event = reward_q.get(cursor);
-        if staker.last_stake_ts < r_event.ts {
-            if staker_vault.vault_pool_token.amount > 0 {
-                return Err(ErrorCode::RewardsNeedsProcessing.into());
-            }
-        }
-        cursor += 1;
-    }
-
-    Ok(())
-}
-
-// Native units.
-pub const SRM_MIN_REWARD: u64 = 500_000_000;
-pub const FIDA_MIN_REWARD: u64 = 900_000_000;
-pub const DXL_MIN_REWARD: u64 = 900_000_000;
-
-pub mod srm_pool {
-    anchor_lang::declare_id!("5vJRzKtcp4fJxqmR7qzajkaKSiAb6aT9grRsaZKXU222");
-}
-pub mod msrm_pool {
-    anchor_lang::declare_id!("7uURiX2DwCpRuMFebKSkFtX9v5GK1Cd8nWLL8tyoyxZY");
-}
-pub mod fida_pool {
-    anchor_lang::declare_id!("5C2ayX1E2SJ5kKEmDCA9ue9eeo3EPR34QFrhyzbbs3qh");
-}
-pub mod dxl_pool {
-    anchor_lang::declare_id!("BQtp3xGPTFXJSt1MVKxtVSefRcBWmUkzTNM3g1t9efcK");
-}
-pub mod srm_mint {
-    anchor_lang::declare_id!("SRMuApVNdxXokk5GT7XD5cUUgXMBCoAz2LHeuAoKWRt");
-}
-pub mod fida_mint {
-    anchor_lang::declare_id!("EchesyfXePKdLtoiZSL8pBe8Myagyy8ZRqsACNCFGnvp");
-}
-pub mod dxl_mint {
-    anchor_lang::declare_id!("GsNzxJfFn6zQdJGeYsupJWzUAm57Ba7335mfhWvFiE9Z");
 }
